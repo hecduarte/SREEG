@@ -94,6 +94,55 @@ def brain_box(
         return None
     return box
 
+# --- Composite dipole support (opt-in, non-breaking) ------------------------
+
+class Dipole(dict):
+    """
+    Dict-compatible dipole with '+' operator to compose multi-dipole signals.
+    Immutable-by-convention: do not mutate fields after creation.
+    """
+    def __add__(self, other):
+        if isinstance(other, Dipole):
+            return Signal([self, other])
+        if isinstance(other, Signal):
+            return Signal([self] + other.dipoles)
+        raise TypeError("Can only add Dipole or Signal")
+
+class Signal:
+    """
+    Composite signal: ordered list of Dipole objects.
+    Supports associative '+' composition and iteration.
+    """
+    __slots__ = ("dipoles",)
+
+    def __init__(self, dipoles):
+        # Minimal validation: non-empty sequence
+        self.dipoles = list(dipoles)
+        if not self.dipoles:
+            raise ValueError("Signal requires at least one Dipole.")
+        # Temporal compatibility (length only; dt alignment is handled downstream)
+        lengths = { (len(d.get("signal")) if "signal" in d and d["signal"] is not None else None)
+                    for d in self.dipoles }
+        known = {L for L in lengths if L is not None}
+        if len(known) > 1:
+            raise ValueError("All dipoles must share the same time length when temporal.")
+
+    def __add__(self, other):
+        if isinstance(other, Dipole):
+            return Signal(self.dipoles + [other])
+        if isinstance(other, Signal):
+            return Signal(self.dipoles + other.dipoles)
+        raise TypeError("Can only add Dipole or Signal")
+
+_ENABLE_SIGNAL_OP = False
+def enable_signal_operator():
+    """
+    Opt-in: make `dipole_in_brain` return a Dipole (sum-enabled).
+    Without calling this, the API remains unchanged.
+    """
+    global _ENABLE_SIGNAL_OP
+    _ENABLE_SIGNAL_OP = True
+    
 
 def dipole_in_brain(
     location="random",
@@ -173,7 +222,16 @@ def dipole_in_brain(
     # --- Signal ---
     signal = amplitude * np.sin(2 * np.pi * frequency * time + phase)
 
-    return {
+    return Dipole({
+        "time": time,
+        "signal": signal,      # time series (official)
+        "amplitude": signal,   # legacy alias for backward-compat (to be deprecated)
+        "location": loc,
+        "orientation": vec,
+        "frequency": float(frequency),
+        "phase": float(phase),
+        "size": float(size),
+    }) if _ENABLE_SIGNAL_OP else {
         "time": time,
         "signal": signal,      # time series (official)
         "amplitude": signal,   # legacy alias for backward-compat (to be deprecated)
@@ -183,6 +241,7 @@ def dipole_in_brain(
         "phase": float(phase),
         "size": float(size),
     }
+
 
 def dipole_to_electrodes(dipole, montage="biosemi32", sigma=0.33):
     """
@@ -233,6 +292,43 @@ def dipole_to_electrodes(dipole, montage="biosemi32", sigma=0.33):
                 return
             self.montage = getattr(obj, "montage", None)
             self.electrodes = getattr(obj, "electrodes", None)
+
+    # --- Composite Signal support (opt-in, non-breaking) --------------------
+    # If a composite Signal is provided, project each Dipole and sum channel-wise.
+    if isinstance(dipole, Signal):
+        acc = None
+        montage_out = None
+        electrodes_out = None
+        time_out = None
+        freq_out = None
+
+        for d in dipole.dipoles:
+            cur = dipole_to_electrodes(d, montage=montage, sigma=sigma)  # recursion (dict/Dipole path)
+            arr = np.asarray(cur, dtype=float)
+            if acc is None:
+                acc = arr.copy()
+                montage_out = getattr(cur, "montage", montage)
+                electrodes_out = getattr(cur, "electrodes", None)
+                time_out = getattr(cur, "time", getattr(d, "time", None))
+                freq_out = getattr(cur, "frequency", None)
+            else:
+                if acc.shape != arr.shape:
+                    raise ValueError(
+                        f"[dipole_to_electrodes] Shape mismatch while summing composite signal: "
+                        f"expected {acc.shape}, got {arr.shape}."
+                    )
+                acc += arr
+
+        ea = ElectrodeActivity(acc, montage_out, electrodes_out)
+        if time_out is not None:
+            setattr(ea, "time", time_out)
+        if freq_out is not None:
+            setattr(ea, "frequency", freq_out)
+        return ea
+
+    # Transparently accept Dipole by unwrapping to dict (legacy path)
+    if isinstance(dipole, Dipole):
+        dipole = dict(dipole)
 
     # Electrode positions and names from montage
     pos, names = get_electrode_positions(montage)
