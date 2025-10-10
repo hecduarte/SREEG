@@ -411,7 +411,7 @@ def activity_brain(activity, montage=None, when=None, reducer="mean",
     import numpy as np
     import matplotlib.pyplot as plt
     from sreeg.electrodes import get_electrode_positions
-    from equipotential import plot_equipotential_map
+    from .equipotential import plot_equipotential_map
 
     # --- Resolve metadata ---
     if isinstance(activity, dict) and "activity" in activity:
@@ -531,7 +531,7 @@ def activity_to_dipole(activity,
 
     # --- Local imports to avoid circular dependencies ---
     from sreeg.interface import activity_brain
-    from onedipoleprediction import (
+    from .onedipoleprediction import (
         dipole_orientation_by_nodal_plane,
         dipole_position_by_planes,
         dipole_orientation_by_fast_grid,

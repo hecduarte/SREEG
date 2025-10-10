@@ -1,5 +1,5 @@
 import numpy as np
-from equipotential import equipotentials
+from .equipotential import equipotentials
 from scipy.spatial import cKDTree
 from scipy.optimize import minimize
 from sreeg.electrodes import evaluate_dipole_at_electrodes
